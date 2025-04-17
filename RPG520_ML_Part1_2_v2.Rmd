@@ -1,0 +1,571 @@
+---
+title: RPG 520 - Machine Learning - supervised learning
+output: html_document
+---
+
+## Linear Regression Models
+
+For the regression problem, we will use the prostate data set, where the task is to predict the PSA level using patient clinical measures. More information on the data is available at https://hastie.su.domains/ElemStatLearn/datasets/prostate.info.txt or https://search.r-project.org/CRAN/refmans/genridge/html/prostate.html.
+
+Firstly, we read in the data and examine the first six observations using the code below. 
+
+```{r}
+prostate <- read.table("https://hastie.su.domains/ElemStatLearn/datasets/prostate.data")
+# prostate <- read.table("prostate.data.txt")
+```
+
+```{r}
+head(prostate)
+```
+
+The data has ten columns. The $lpsa$ is the outcome (log-transformed PSA level). The $train$ indicates whether the observation is in the training or test set.
+The $dim$ function returns the dimension of the dataframe. There are a total of 97 observations, since the number of rows is 97.
+
+### Data processing
+
+```{r}
+dim(prostate)
+```
+
+The $summary$ function gives basic summary statistics of the data. From the summary we can see there are 67 observations in the training set and 30 observations in the test set.
+
+```{r}
+summary(prostate)
+```
+
+We separate the data into training and test set.
+
+```{r}
+prostate_train <- subset(prostate, train)
+prostate_test <- subset(prostate, !train)
+```
+
+```{r}
+prostate_train$train <- NULL
+prostate_test$train <- NULL
+```
+
+```{r}
+library(GGally)
+```
+
+```{r}
+ggpairs(prostate_train, columns = 1:9) + theme_bw()
+```
+
+### Ordinary least square regression
+
+First we fit a linear model using ordinary least square regression.
+
+```{r}
+lm_fit <- lm(lpsa ~ ., prostate_train)
+```
+
+```{r}
+summary(lm_fit)
+```
+
+```{r}
+predict_lm <- predict(lm_fit, prostate_test)
+```
+
+```{r}
+head(predict_lm)
+```
+
+```{r}
+y_test <- prostate_test$lpsa
+mse_lm <- mean((y_test-predict_lm)^2)
+mse_lm
+```
+
+```{r}
+var(prostate_test$lpsa)
+```
+
+### LASSO regression
+
+We will use $glmnet$ package to implement LASSO, Ridge, and Elastic net regression methods.
+
+```{r}
+library(glmnet)
+```
+
+The features $X$ and outcome $Y$ are converted to matrices and vectors.
+
+```{r}
+x_train <- as.matrix(prostate_train[,1:8])
+y_train <- prostate_train$lpsa
+x_test <- as.matrix(prostate_test[,1:8])
+```
+
+The loss function in R is $$RSS/2n+\lambda \times penalty,$$
+
+where the penalty is $$(1−\alpha)/2∣∣\beta∣∣_2^2+\alpha∣∣\beta∣∣_1.$$
+
+A cross-validation procedure is needed to select the parameter $\lambda$. This can be done using the $cv.glmnet$. By default, the function will automatically choose a sequence of $\lambda$, and the default number of folds is 10. The default $\alpha=1$, which corresponds to a LASSO regression.
+
+```{r}
+set.seed(123)
+cv_fit <- cv.glmnet(x_train, y_train, alpha = 1, nfolds=10, family = "gaussian")
+```
+
+There are two dashed vertical lines in the plot below. The first one corresponds to the $\lambda$ gives the minimum cross-validation error. The second one corresponds to the maximum $\lambda$ of which the cross-validation error is whithin the 1 standard error limit of the best model (with minimum cross-validation error). This is the model based on 1SE rule. The model selected based on this rule will be more parsimonious.
+
+```{r}
+plot(cv_fit)
+```
+
+We fit the LASSO model using the $\lambda$ selected based on 1SE rule.
+
+```{r}
+fit_lasso <- glmnet(x_train, y_train, lambda = cv_fit$lambda.1se)
+```
+
+The final model only has three non-zero coefficients.
+
+```{r}
+fit_lasso$beta
+```
+
+The MSE can be calculated as below.
+
+```{r}
+pred_lasso <- predict(fit_lasso, x_test)
+mse_lasso <- mean((y_test-pred_lasso)^2)
+mse_lasso
+```
+
+### Ridge regression
+
+We can obtain a ridge regression model be setting $\alpha=0$.
+
+```{r}
+cv_ridge <- cv.glmnet(x_train, y_train, alpha=0)
+```
+
+```{r}
+fit_ridge <- glmnet(x_train, y_train, lambda = cv_fit$lambda.1se, alpha=0)
+```
+
+All variables will have non-zero coefficients.
+
+```{r}
+fit_ridge$beta
+```
+
+```{r}
+pred_ridge <- predict(fit_ridge, x_test)
+mse_ridge <- mean((y_test-pred_ridge)^2)
+mse_ridge
+```
+
+### Elastic Net
+
+If we set $0<\alpha<1$, then we will train a elastic net model. In practice, the $\alpha$ needs to be tuned by cross-validation. To to this, we can repeat the procedure above for each $\alpha$ and then select the $\alpha$ and $\beta$ combindation that has the smallest CV error. 
+
+As an example, we first look at the $\alpha=0.01$, and then record the minimal CV error across the different $\lambda$.
+
+```{r}
+set.seed(1)
+cv_enet_1 <- cv.glmnet(x_train, y_train, alpha=0.01)
+```
+
+```{r}
+min(cv_enet_1$cvm)
+```
+
+Then we look at the $\alpha=0.5$, and then record the minimal CV error as well. We can repeat this procedure for all candidate $\alpha$.
+
+```{r}
+set.seed(1)
+cv_enet_2 <- cv.glmnet(x_train, y_train, alpha=0.5)
+```
+
+```{r}
+min(cv_enet_2$cvm)
+```
+
+While this can be done manually for a small number of $\alpha$'s, or using a **for** loop, it is easier to do this using the **train** function provided in the **caret** package.
+
+We first create the splitting of training data for 10-fold CV using **createFolds**. By setting **returnTrain=TRUE**, the function will return the list of indices of the rows that will be used for training in each CV loop.
+
+```{r}
+library(caret)
+set.seed(123)
+cv_folds <- createFolds(1:nrow(x_train), k=10, returnTrain=TRUE)
+```
+
+Next we set the configuration of the CV, including 10-fold CV, save the leave-out predictions of the model of the final selection, the indices for training in each CV loop, and the final model will be selected based on the best CV performance.
+
+```{r}
+ctrl <- trainControl(method="cv", number=10, returnResamp="all",
+                     savePredictions = "final", index = cv_folds, 
+                     selectionFunction = "best") #oneSE
+```
+
+We will also prepare all the combinations of hyperparameters that we want to search.
+
+```{r}
+search_grid <- expand.grid(alpha = seq(0,1,by = 0.1),
+                           lambda = 10^seq(-4, 0, by = 0.1))
+```
+
+```{r}
+dim(search_grid)
+```
+
+Next we implement the CV using the **train** function. The **RMSE** is the squared root of MSE.
+
+```{r}
+set.seed(1)
+enet_cv <- train(x_train, y_train, method = "glmnet", 
+                 trControl = ctrl, metric = "RMSE",
+                 tuneGrid = search_grid)
+```
+
+We can then look at the minimum CV RMSE we obtained.
+
+```{r}
+min(enet_cv$results$RMSE)
+```
+
+The MSE can be obtained by taking the squared number.
+
+```{r}
+min(enet_cv$results$RMSE)^2
+```
+
+```{r}
+coef(enet_cv$finalModel, enet_cv$bestTune$lambda)
+```
+
+We can then use the final selected model to make predictions for the test observations, and then evaluate the test prediction error in terms of MSE.
+
+```{r}
+pred_enet <- predict(enet_cv, x_test)
+mse_enet <- mean((y_test-pred_enet)^2)
+mse_enet
+```
+
+## Linear Model for Classification
+
+A retrospective sample of males in a heart-disease high-risk region of the Western Cape, South Africa. There are roughly two controls per case of CHD. Many of the CHD positive men have undergone blood pressure reduction treatment and other programs to reduce their risk factors after their CHD event. In some cases the measurements were made after these treatments. These data are taken from a larger dataset, described in  Rousseauw et al, 1983, South African Medical Journal. For information on the variables, see https://hastie.su.domains/ElemStatLearn/datasets/SAheart.info.txt
+
+```{r}
+saheart <- read.table("https://hastie.su.domains/ElemStatLearn/datasets/SAheart.data", sep=",", head=T, row.names=1)
+```
+
+```{r}
+head(saheart)
+```
+
+```{r}
+saheart$famhist <- as.numeric(as.factor(saheart$famhist))-1
+```
+
+```{r}
+dim(saheart)
+```
+
+The data is randomly split into 70% training set and 30% test set.
+
+```{r}
+set.seed(123)
+n <- nrow(saheart)
+train_id <- sort(sample(1:n, round(n*0.7)))
+
+saheart_train <- saheart[train_id, ]
+saheart_test <- saheart[-train_id, ]
+
+x_train <- as.matrix(saheart_train[, 1:9])
+y_train <- saheart_train$chd
+y_train <- ifelse(y_train == 1, "p", "n")
+x_test <- as.matrix(saheart_test[, 1:9])
+y_test <- saheart_test$chd
+y_test <- ifelse(y_test == 1, "p", "n")
+```
+
+Within the training set, we fit a penalized logistic regression model by setting family="binomial" in **glmnet**. Similary, we will use the **caret::train** function to conduct the CV. Here we set the metric to **ROC**, meaning we are going to select the model based on AUC of ROC.
+
+```{r}
+library(caret)
+cv_folds <- createFolds(1:nrow(x_train), k=10, returnTrain=TRUE)
+ctrl <- trainControl(method="cv", number=10, returnResamp="all", 
+                     summaryFunction=twoClassSummary,
+                     classProbs=TRUE, savePredictions = "final", index = cv_folds, 
+                     selectionFunction = "best")
+
+set.seed(123)
+enet_cv <- train(x_train, y_train, method = "glmnet", family = "binomial",
+                 trControl = ctrl, metric = "ROC", 
+                 tuneGrid = expand.grid(alpha = seq(0.1,1,by = 0.1),
+                 lambda = 10^seq(-5, 0, by = 0.1)))
+```
+
+The best AUC we got from the CV for elastic model is shown below.
+
+```{r}
+# head(enet_cv$result)
+max(enet_cv$result$ROC)
+```
+
+The hyperparameter of the best model
+
+```{r}
+enet_cv$bestTune
+```
+
+```{r}
+coef(enet_cv$finalModel, enet_cv$bestTune$lambda)
+```
+
+Sometimes we would like to select the cutoff base to make predictions. As introduced in the class, this can be done by maximizing the Youden index
+$$Youden~ index=sensitivity+specificity-1 $$
+
+Ideally, this can be achieved by treating the cutoff as a hyperparameter, and make the selection so as to maximize the average Youden index from the CV. Here we take a shortcut and get the ROC using the pooled hold-out prediction for all training observations, and selected the cutoff value based on the this single ROC. The enet_cv_pred_obs will return the observed outcome for all observations, while enet_cv_pred_p returns the corresponding hold-out predictions.
+
+```{r}
+library(pROC)
+roc_val <- roc(enet_cv$pred$obs, enet_cv$pred$p)
+print(roc_val)
+plot(roc_val)
+```
+
+Once we have the ROC, the cutoff can be selected using the **coords** function. Here we selected the cutoff/threshold with the best Youden index.
+
+```{r}
+cutoff_selection <- coords(roc_val, x="best", 
+       ret=c("threshold", "specificity", "sensitivity", "accuracy"), 
+       best.method=c("youden"))
+cutoff_selection
+```
+
+Next we use the best model from the CV to make predictions for the test observations, and evaluate the AUC and other metrics based on the cutoff we selected from the training data. If we want to select among multiple models, we should stop before this step, and select the model with best CV performance to apply it on the test data set.
+
+```{r}
+pred_enet <- predict(enet_cv, x_test, type = "prob")[,2]
+roc_en <- roc(y_test, pred_enet)
+print(roc_en)
+```
+
+```{r}
+plot(roc_en)
+```
+
+The predicted test outcome is dichotomized based on the selected threshold. Then we obtain the confusion matrix on the test data set.
+
+```{r}
+y_hat <- ifelse(pred_enet>cutoff_selection$threshold[1], "p", "n")
+confusionMatrix(table(y_test, y_hat), positive = "p")
+```
+
+# Nonlinear methods
+
+```{r}
+library(pROC)
+library(rpart)
+library(rpart.plot)
+library(rattle)
+```
+
+## CART
+
+```{r}
+df_train <- data.frame(y=y_train, x_train)
+df_test <- data.frame(y=y_test, x_test)
+```
+
+In this part, we will build a classification tree using **rpart** function in the **rpart** package. By setting cp=0, we want the tree to be fully grown.
+
+```{r}
+library(rpart)
+set.seed(1)
+cart_fit <- rpart(
+  y ~ ., 
+  data = df_train, 
+  method = "class", # this is a classification problem
+  minbucket = 2, # the minimum number of observations that must exist in a node in order for a split to be attempted.
+  minsplit = 6, # the minimum number of observations in any terminal <leaf> node.
+  cp = 0 # complexity parameter. Any split that does not decrease the overall lack of fit by a factor of cp is not attempted.
+)
+```
+
+Using the code above, we obtain a fully-grown tree as shown below.
+
+```{r}
+fancyRpartPlot(cart_fit, caption = NULL)
+```
+
+Prints a table of optimal prunings based on a complexity parameter (CP).
+
+```{r}
+printcp(cart_fit)
+```
+
+Next we select the optimal CP value which has the lowest CV error.
+
+```{r}
+cp_optimal <- cart_fit$cptable[which.min(cart_fit$cptable[,"xerror"]),"CP"]
+cp_optimal
+```
+
+The tree was pruned based on the optimal CP value.
+
+```{r}
+cart_pruned <- prune(cart_fit, cp = cp_optimal)
+```
+
+Plot the pruned tree.
+
+```{r}
+fancyRpartPlot(cart_pruned, caption = NULL)
+```
+
+The CP can also be selected using **caret::train** function, similar to LASSO/Ridge.
+
+```{r}
+cart_cv <- train(y ~ ., data = df_train, trControl = ctrl, method = "rpart", metric = "ROC",
+                 minsplit=6, minbucket=2)
+fancyRpartPlot(cart_pruned, caption = NULL)
+```
+
+The best CV ROC using a classification tree is shown below. Note the tree model has poor CV perfromance due to its high variance and lack of smoothness.
+
+```{r}
+cart_cv$result
+max(cart_cv$result$ROC)
+```
+
+## Random Forest
+
+In this section we will look at the random forest model. This can be implemented by the **randomForest** function in the **randomForest** package.
+
+```{r}
+library(randomForest)
+set.seed(123)
+rf_sah <- randomForest(x_train, factor(y_train), importance = TRUE, ntree=1000)
+```
+
+The model summary below shows the out-of-bag (OOB) estimate of the error rate and the confusion matrix. By default, these results were based on a cutoff of predicted probability of 0.5.
+
+```{r}
+rf_sah
+```
+
+The plot function can be used to check the convergence of the model.
+
+```{r}
+plot(rf_sah)
+```
+
+The code below can be used to check the variable importance. By default, both the measures defined by mean decrease in accuracy (type 1), and mean decrease in node impurity (type 2), will be returned. It is possible to specify the type of measurements to return.
+
+```{r}
+varImpPlot(rf_sah)
+# varImpPlot(rf_sah, type=1)
+```
+
+The partial dependence plot will show you the relationship between the predictor and outcome. Usually we would first examine the predictors with high importance. The plot below indicates higher tobacco is associated with higher risk of CHD. For classification problem, the y-axis corresponds to predicted log odds. More information on how partial dependence is calculated can be found here: https://cran.r-project.org/web/packages/pdp/vignettes/pdp-intro.pdf
+
+```{r}
+library(pdp)
+```
+
+```{r}
+pd <- partial(rf_sah, pred.var = "tobacco", which.class = "p")
+```
+
+```{r}
+plotPartial(pd, smooth = TRUE)
+```
+
+It is also possible to visualize the PDP with two features.
+
+```{r}
+partial(rf_sah, pred.var = c("tobacco", "ldl"), plot = TRUE, which.class = "p")
+```
+
+Similarly, we can use the **train** function to perform CV on random forest model. This can be done when you want to compare CV performance among different models. For random forest, usually using the default settings will achieve a good performance, so it requires minimal tuning. Here we tested different mtry, which is the number of features randomly selected at each splitting.
+
+```{r}
+rf_grid <- expand.grid(.mtry = 2:7)
+set.seed(1)
+rf_cv <- train(y ~ ., data=df_train, method="rf", ntree=1000,
+              trControl=ctrl, verbose=FALSE, tuneGrid=rf_grid, metric="ROC")  
+```
+
+```{r}
+max(rf_cv$result$ROC)
+```
+
+```{r}
+# pred_rf <- predict(rf_cv, x_test)
+# pred_rf <- predict(rf_cv, x_test, type = "prob")[,2]
+# roc_rf <- roc(y_test, pred_rf)
+# plot(roc_rf)
+```
+
+## Gradient boosting
+
+```{r}
+library(gbm)
+```
+
+Similarly, we will select the hyperparameters based on CV. The parameters to be selected include the interaction depth (depth of the base learner or number of splits, 1 corresponds to stump tree), number of trees and shrinkage parameter.
+
+```{r}
+gbm_grid <- expand.grid(interaction.depth=c(1, 3, 5), 
+                        n.trees = (1:10)*100,
+                        shrinkage=c(0.2, 0.1, 0.01, 0.001),
+                        n.minobsinnode=1)
+set.seed(1)
+gbm_cv <- train(y ~ ., data=df_train, method="gbm", distribution="bernoulli", 
+                bag.fraction=0.5, 
+                trControl=ctrl, verbose=FALSE, tuneGrid=gbm_grid, metric="ROC") 
+```
+
+The result below shown the setting of the best model.
+
+```{r}
+gbm_cv$bestTune
+```
+
+The CV ROC of the best model is shown below. Note that the best AUC from the boosting model is slightly lower than that of the elastic net model. Condsidering the good interpretibility of linear models, it is more advantageous to choose the elastic net as the winning model, and evaluate it in the test set. Below, we apply the boosting model to the test data set for demonstration purpose.
+
+```{r}
+max(gbm_cv$result$ROC)
+```
+
+Similar to random forest, we can obtain the variable importance of the selected model.
+
+```{r}
+summary(gbm_cv$finalModel)
+```
+
+Similary, we will use the final model to make prdictions of the test set observations, and obtain the test AUC. We can further use the pooled leave-out prediction to select the cutoff and evaluate the sensitivity and specificity.
+
+```{r}
+library(pROC)
+pred_gbm <- predict(gbm_cv, df_test, type = "prob")[,2]
+roc_val <- roc(gbm_cv$pred$obs, gbm_cv$pred$p)
+```
+
+```{r}
+cutoff_selection <- coords(roc_val, x="best", 
+       ret=c("threshold", "specificity", "sensitivity", "accuracy"), 
+       best.method=c("youden"))
+cutoff_selection
+```
+
+```{r}
+roc_test <- roc(y_test, pred_gbm)
+print(roc_test)
+plot(roc_test)
+```
+
+```{r}
+y_hat <- ifelse(pred_enet>cutoff_selection$threshold[1], "p", "n")
+confusionMatrix(table(y_test, y_hat), positive = "p")
+```
+
